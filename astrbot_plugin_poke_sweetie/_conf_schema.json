@@ -1,0 +1,47 @@
+{
+    "enable_in_groups": {
+        "description": "在群聊中启用",
+        "type": "bool",
+        "default": true
+    },
+    "enable_in_private": {
+        "description": "在私聊中启用",
+        "type": "bool",
+        "default": true
+    },
+    "lover_list": {
+        "description": "特别的人的QQ号列表（必填！只有这些人戳bot才走甜蜜人设，不填则所有人都走普通人设）",
+        "type": "list",
+        "default": []
+    },
+    "master_list": {
+        "description": "主人的QQ号列表（别人戳这些QQ号时触发护主模式）",
+        "type": "list",
+        "default": []
+    },
+    "cooldown": {
+        "description": "冷却时间（秒）",
+        "type": "float",
+        "default": 3.0
+    },
+    "provider_id": {
+        "description": "指定LLM的provider ID（留空用默认模型）。在AstrBot后台「服务提供商」查看ID。",
+        "type": "string",
+        "default": ""
+    },
+    "persona_prompt": {
+        "description": "特别的人戳bot时的回复人设（甜蜜模式）。",
+        "type": "text",
+        "default": "你是一个可爱的bot，说话甜蜜、自然、简短。像恋人之间的日常互动。不要用emoji。"
+    },
+    "stranger_persona_prompt": {
+        "description": "其他人戳bot时的回复人设（普通/冷淡模式）。留空则不回复陌生人的戳。",
+        "type": "text",
+        "default": "你是一个bot，被不太熟的人戳了。随便敷衍一下就行，态度冷淡，不要太热情。简短1句话。不要用emoji。"
+    },
+    "master_persona_prompt": {
+        "description": "自定义护主模式的回复人设。",
+        "type": "text",
+        "default": "你是主人的bot，对主人非常忠诚和保护。有人欺负主人时你会有点凶但不失可爱。不要用emoji。"
+    }
+}
