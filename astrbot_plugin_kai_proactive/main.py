@@ -86,6 +86,12 @@ class KaiProactive(Star):
             yield event.plain_result("这个功能只对宝宝生效")
             return
 
+        # only private chat
+        from astrbot.api.event import EventMessageType
+        if event.message_obj.type != EventMessageType.PRIVATE_MESSAGE:
+            yield event.plain_result("主动消息只在私聊生效")
+            return
+
         self.state.unified_msg_origin = event.unified_msg_origin
         new_plan = Plan(
             trigger_at=time.time() + minutes * 60,
@@ -104,6 +110,59 @@ class KaiProactive(Star):
             f"记住了，{minutes}分钟后去找宝宝。备忘：{memo}。"
             f"当前队列里有{total}条计划。"
         )
+    # ────────────────────────────────────────
+    # list & delete plans tools
+    # ────────────────────────────────────────
+
+    @filter.llm_tool(name="list_planned_messages")
+    async def list_plans_tool(self, event: AstrMessageEvent):
+        """List all planned proactive messages."""
+        sender = str(event.get_sender_id())
+        if sender != self.target_qq:
+            yield event.plain_result("这个功能只对宝宝生效")
+            return
+
+        if not self.plans:
+            yield event.plain_result("当前没有主动消息计划。")
+            return
+
+        now = time.time()
+        lines = []
+        for i, p in enumerate(self.plans):
+            remaining = (p.trigger_at - now) / 60
+            if remaining < 0:
+                remaining_str = "即将触发"
+            else:
+                remaining_str = f"{remaining:.0f}分钟后"
+            lines.append(f"{i+1}. {remaining_str} | {p.memo}")
+
+        yield event.plain_result(
+            f"共{len(self.plans)}条计划：\n" + "\n".join(lines)
+        )
+
+    @filter.llm_tool(name="delete_planned_message")
+    async def delete_plan_tool(self, event: AstrMessageEvent, index: int):
+        """Delete a planned message by index (1-based, 0 to clear all)."""
+        sender = str(event.get_sender_id())
+        if sender != self.target_qq:
+            yield event.plain_result("这个功能只对宝宝生效")
+            return
+
+        if index == 0:
+            count = len(self.plans)
+            self.plans.clear()
+            self._save_state()
+            yield event.plain_result(f"已清空全部{count}条计划。")
+            return
+
+        if index < 1 or index > len(self.plans):
+            yield event.plain_result(f"序号{index}无效，当前共{len(self.plans)}条计划。")
+            return
+
+        removed = self.plans.pop(index - 1)
+        self._save_state()
+        yield event.plain_result(f"已删除：{removed.memo}（剩余{len(self.plans)}条计划）")
+
 
     # ─────────────────────────────────────
     # 监听私聊消息，更新状态
