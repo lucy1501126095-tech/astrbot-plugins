@@ -20,10 +20,10 @@
 |------|------|------|
 | [kai_proactive](./astrbot_plugin_kai_proactive) | v1.4.0 | 模型驱动的自循环主动联系系统 |
 | [poke_sweetie](./astrbot_plugin_poke_sweetie) | v1.4.0 | 戳一戳甜蜜回复 + 护主模式 |
-| [kai_qzone](./astrbot_plugin_kai_qzone) | v1.1.0 | QQ空间自动互动 |
+| [kai_qzone](./astrbot_plugin_kai_qzone) | v1.3.0 | QQ空间自动互动 |
 | [kai_lorebook](./astrbot_plugin_kai_lorebook) | v1.0.0 | 关键词触发的极简世界书 |
 | [health_monitor](./astrbot_plugin_health_monitor) | v1.0.0 | Apple Health 健康数据监控 |
-| [gpt_image](./astrbot_plugin_gpt_image) | v1.0.0 | 聊天式 AI 画图 |
+| [gpt_image](./astrbot_plugin_gpt_image) | v1.6.0 | 聊天式 AI 画图 |
 
 ---
 
