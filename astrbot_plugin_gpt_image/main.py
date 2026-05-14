@@ -175,8 +175,10 @@ class GPTImagePlugin(Star):
             ) as resp:
                 data = await resp.json()
                 if resp.status != 200:
-                    logger.error(f"Image API 错误 ({resp.status}): {data}")
-                    return None
+                    # 提取API错误信息直接抛出
+                    err_msg = data.get("error", {}).get("message", str(data))
+                    logger.error(f"Image API 错误 ({resp.status}): {err_msg[:200]}")
+                    raise Exception(f"API {resp.status}: {err_msg[:300]}")
                 if "data" in data and len(data["data"]) > 0:
                     item = data["data"][0]
                     if "url" in item and item["url"]:
@@ -207,8 +209,9 @@ class GPTImagePlugin(Star):
                 ) as resp:
                     data = await resp.json()
                     if resp.status != 200:
-                        logger.error(f"Edits API 错误 ({resp.status}): {data}")
-                        return None
+                        err_msg = data.get("error", {}).get("message", str(data))
+                        logger.error(f"Edits API 错误 ({resp.status}): {err_msg[:200]}")
+                        raise Exception(f"API {resp.status}: {err_msg[:300]}")
                     if "data" in data and len(data["data"]) > 0:
                         item = data["data"][0]
                         if "url" in item and item["url"]:
@@ -233,8 +236,9 @@ class GPTImagePlugin(Star):
                 ) as resp:
                     data = await resp.json()
                     if resp.status != 200:
-                        logger.error(f"Edits API 错误 ({resp.status}): {data}")
-                        return None
+                        err_msg = data.get("error", {}).get("message", str(data))
+                        logger.error(f"Edits API 错误 ({resp.status}): {err_msg[:200]}")
+                        raise Exception(f"API {resp.status}: {err_msg[:300]}")
                     if "data" in data and len(data["data"]) > 0:
                         item = data["data"][0]
                         if "url" in item and item["url"]:
