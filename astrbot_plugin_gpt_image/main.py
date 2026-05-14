@@ -5,27 +5,26 @@ import aiohttp
 import asyncio
 from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult
 from astrbot.api.star import Context, Star, register
-from astrbot.api.message_components import Image, Plain, Node
-from astrbot.api import logger, AstrBotConfig
+from astrbot.api.message_components import Image, Plain
+from astrbot.api import logger
 
 @register(
     "astrbot_plugin_gpt_image",
     "Kai",
     "GPT Image 2 画图插件，支持 chat 模式和 image 模式",
-    "1.4.0",
+    "1.6.0",
 )
 class GPTImagePlugin(Star):
-    def __init__(self, context: Context, config: AstrBotConfig):
+    def __init__(self, context: Context, config: dict):
         super().__init__(context)
         self.config = config
         self.image_provider_id = config.get("image_provider", "")
         self.model = config.get("model", "gpt-image-2")
         self.timeout = config.get("timeout", 120)
         self.last_image_url = {}
-        # 新增三个配置项
-        self.api_mode = config.get("api_mode", "chat")  # "chat" 或 "image"
-        self.image_api_base = config.get("image_api_base", "")  # 中转站地址
-        self.image_api_key = config.get("image_api_key", "")  # 中转站key
+        self.api_mode = config.get("api_mode", "chat")
+        self.image_api_base = config.get("image_api_base", "")
+        self.image_api_key = config.get("image_api_key", "")
 
     async def _get_image_provider(self, event: AstrMessageEvent):
         """获取画图用的模型提供商实例"""
@@ -92,13 +91,8 @@ class GPTImagePlugin(Star):
                     img = Image.fromURL(result)
                 yield event.chain_result([img])
 
-                # 把 prompt 包成转发消息折叠发送，避免刷屏
-                prompt_node = Node(
-                    uin="0",
-                    name="画图 Prompt",
-                    content=[Plain(f"{prompt}")]
-                )
-                yield event.chain_result([prompt_node])
+                # 不再 yield 第二个 chain_result，prompt 信息通过日志记录即可
+                logger.info(f"画图成功，prompt: {prompt}")
 
             else:
                 yield event.plain_result("画图失败：API 返回的内容中未找到图片链接，可能是服务负载过高，请稍后重试。")
@@ -132,11 +126,11 @@ class GPTImagePlugin(Star):
                 yield event.plain_result("未找到可用的模型提供商，请在插件配置中选择画图提供商，或确保已配置默认提供商。")
                 return
 
-        new_prompt = edit_instruction
+        new_prompt = f"Here is a reference image. Please modify it according to these instructions and generate the edited image: {edit_instruction}"
         logger.info(f"GPT Image 修改请求: {new_prompt}")
 
         try:
-            result = await self._call_image_api(prov, new_prompt)
+            result = await self._call_image_api(prov, new_prompt, image_urls=[last["url"]])
 
             if result:
                 self.last_image_url[session_id] = {
@@ -150,14 +144,8 @@ class GPTImagePlugin(Star):
                 else:
                     img = Image.fromURL(result)
                 yield event.chain_result([img])
-
-                # 把 prompt 包成转发消息折叠发送
-                prompt_node = Node(
-                    uin="0",
-                    name="修改 Prompt",
-                    content=[Plain(f"原始: {last['prompt']}\n修改: {new_prompt}")]
-                )
-                yield event.chain_result([prompt_node])
+                
+                logger.info(f"修改图片成功，原prompt: {last['prompt']}，修改: {new_prompt}")
 
             else:
                 yield event.plain_result("修改图片失败：API 返回的内容中未找到图片链接，可能是服务负载过高，请稍后重试。")
@@ -168,12 +156,16 @@ class GPTImagePlugin(Star):
             logger.error(f"GPT Image 修改失败: {e}")
             yield event.plain_result(f"修改图片失败: {str(e)}")
 
-    async def _call_image_api(self, provider, prompt: str) -> str | None:
+    async def _call_image_api(self, provider, prompt: str, image_urls: list[str] | None = None) -> str | None:
         """调用画图 API，返回图片 URL 或本地文件路径"""
 
         if self.api_mode == "image":
             # ===== image 模式：直接请求 /v1/images/generations =====
-            url = self.image_api_base.rstrip("/") + "/v1/images/generations"
+            api_base = self.image_api_base.rstrip("/")
+            if "/v1" in api_base:
+                url = api_base + "/images/generations"
+            else:
+                url = api_base + "/v1/images/generations"
             headers = {
                 "Authorization": f"Bearer {self.image_api_key}",
                 "Content-Type": "application/json"
@@ -210,7 +202,7 @@ class GPTImagePlugin(Star):
                 kwargs["model"] = self.model
 
             llm_resp = await asyncio.wait_for(
-                provider.text_chat(prompt=prompt, **kwargs),
+                provider.text_chat(prompt=prompt, image_urls=image_urls, **kwargs),
                 timeout=self.timeout,
             )
 
