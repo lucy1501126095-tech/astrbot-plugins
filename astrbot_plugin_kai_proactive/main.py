@@ -416,6 +416,14 @@ class KaiProactive(Star):
             return json.loads(content)
         except Exception as e:
             logger.error(f"[KaiProactive] 决策失败: {e}")
+            try:
+                if self.state.unified_msg_origin:
+                    chain = MessageChain().message(f"[proactive决策层] {e}")
+                    await self.context.send_message(
+                        self.state.unified_msg_origin, chain
+                    )
+            except Exception:
+                pass
             return {"send": False, "wait_minutes": 10}
 
     # ─────────────────────────────────────
@@ -526,6 +534,15 @@ next_minutes是下次间隔，null表示暂停等她回。
             )
         except Exception as e:
             logger.error(f"[KaiProactive] 生成失败: {e}")
+            # 直接把报错发过去
+            try:
+                if self.state.unified_msg_origin:
+                    chain = MessageChain().message(f"[proactive生成层] {e}")
+                    await self.context.send_message(
+                        self.state.unified_msg_origin, chain
+                    )
+            except Exception:
+                pass
             return (None, None, None)
 
     # ─────────────────────────────────────
