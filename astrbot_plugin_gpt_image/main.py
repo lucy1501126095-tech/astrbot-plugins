@@ -101,9 +101,24 @@ class GPTImagePlugin(Star):
         ref_image = None
         for comp in event.message_obj.message:
             if isinstance(comp, Image):
-                ref_image = getattr(comp, 'file', None) or getattr(comp, 'url', None) or str(comp)
+                # 调试：打印所有可能的属性
+                url_attr = getattr(comp, 'url', None)
+                file_attr = getattr(comp, 'file', None)
+                file_unique = getattr(comp, 'file_unique', None) or getattr(comp, 'fileUnique', None)
+                logger.info(f"图片组件属性 - url:{url_attr}, file:{file_attr}, file_unique:{file_unique}, all:{vars(comp) if hasattr(comp, '__dict__') else comp}")
+
+                # 优先取完整http url
+                if url_attr and url_attr.startswith('http'):
+                    ref_image = url_attr
+                elif file_attr and file_attr.startswith('http'):
+                    ref_image = file_attr
+                elif file_attr and os.path.isfile(file_attr):
+                    ref_image = file_attr
+                else:
+                    ref_image = url_attr or file_attr or str(comp)
+
                 if ref_image:
-                    logger.info(f"使用用户发来的图片: {ref_image[:80]}")
+                    logger.info(f"使用用户发来的图片: {ref_image[:120]}")
                     break
 
         # 没有就用上一次画的
