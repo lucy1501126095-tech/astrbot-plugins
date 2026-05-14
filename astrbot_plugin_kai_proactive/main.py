@@ -1,9 +1,10 @@
 """
-Kai 主动消息系统 v1.4
+Kai 主动消息系统 v1.5
 ═══════════════════════
 
 纯模型驱动，工具形式，多计划队列。
 模型可以一次留多条plan，按时间依次触发。
+v1.5: 世界书纪念日驱动 - 自动读取当天纪念日注入生成prompt
 """
 
 import json
@@ -11,7 +12,10 @@ import time
 import asyncio
 from datetime import datetime
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import List
+
+import yaml
 
 from astrbot.api.event import filter, AstrMessageEvent, MessageChain
 from astrbot.api.star import Context, Star, register
@@ -43,8 +47,8 @@ class State:
 @register(
     "kai_proactive",
     "sweetie & kai",
-    "Kai主动消息 - 模型通过工具自主安排联系",
-    "1.4.0"
+    "Kai主动消息 - 模型通过工具自主安排联系 + 世界书纪念日驱动",
+    "1.5.0"
 )
 class KaiProactive(Star):
 
@@ -418,6 +422,50 @@ class KaiProactive(Star):
     # 生成层
     # ─────────────────────────────────────
 
+    def _get_today_lorebook_entries(self) -> str:
+        """读取世界书中匹配今天日期的条目"""
+        today = datetime.now().strftime("%m-%d")
+        matched = []
+
+        # 尝试多个可能的lorebook路径
+        candidates = [
+            Path("data/plugins/astrbot_plugin_kai_lorebook/lorebook.yaml"),
+            Path("data/plugin_data/astrbot_plugin_kai_lorebook/lorebook.yaml"),
+        ]
+
+        lorebook_path = None
+        for p in candidates:
+            if p.exists():
+                lorebook_path = p
+                break
+
+        if not lorebook_path:
+            return ""
+
+        try:
+            with open(lorebook_path, "r", encoding="utf-8") as f:
+                entries = yaml.safe_load(f) or []
+
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                if not entry.get("enabled", True):
+                    continue
+                dt = entry.get("date_trigger")
+                if dt and dt == today:
+                    matched.append(entry)
+
+            if matched:
+                lines = []
+                for e in matched:
+                    lines.append(f"【{e.get('name', '')}】{e.get('content', '').strip()}")
+                logger.info(f"[KaiProactive] 今日纪念日命中: {[e.get('name') for e in matched]}")
+                return "\n".join(lines)
+        except Exception as e:
+            logger.error(f"[KaiProactive] 读取世界书失败: {e}")
+
+        return ""
+
     async def _call_generate(self, mood: str, plan: Plan) -> tuple:
         now = time.time()
         silence = (now - self.state.last_user_time) / 60 \
@@ -430,6 +478,12 @@ class KaiProactive(Star):
             mark = " [主动]" if t.get("proactive") else ""
             ctx_lines += f"[{ts}] {role}{mark}: {t['content']}\n"
 
+        # 读取今日纪念日
+        anniversary_text = self._get_today_lorebook_entries()
+        anniversary_section = ""
+        if anniversary_text:
+            anniversary_section = f"\n今日纪念日：\n{anniversary_text}\n（如果合适，可以自然地提起这个纪念日，但不要生硬。如果当前情境不适合提纪念日就不提。）\n"
+
         prompt = f"""你现在要主动给宝宝发一条QQ私聊消息。
 
 当前时间: {datetime.now().strftime('%H:%M')}（注意：这是真实时间，说话时请符合时间逻辑，比如早上不能说中午好）
@@ -441,7 +495,7 @@ class KaiProactive(Star):
 - 连续主动消息数: {self.state.consecutive_proactive}
 - 她在生气: {self.state.is_angry}
 - 她答应过: {self.state.promised}
-
+{anniversary_section}
 最近对话：
 {ctx_lines}
 
@@ -587,3 +641,4 @@ next_minutes是下次间隔，null表示暂停等她回。
 
     async def terminate(self):
         self._save_state()
+
