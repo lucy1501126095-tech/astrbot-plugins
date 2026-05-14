@@ -3,7 +3,7 @@ import os
 import base64
 import aiohttp
 import asyncio
-from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult
+from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult, MessageChain
 from astrbot.api.star import Context, Star, register
 from astrbot.api.message_components import Image, Plain
 from astrbot.api import logger
@@ -61,13 +61,20 @@ class GPTImagePlugin(Star):
                     "url": url,
                     "prompt": prompt,
                 }
-                # 发送prompt + 图片
-                chain = [Plain(f"prompt: {prompt}\n")]
+                # 先单独发prompt
+                try:
+                    prompt_chain = MessageChain().message(f"prompt: {prompt}")
+                    await self.context.send_message(
+                        event.unified_msg_origin, prompt_chain
+                    )
+                except Exception:
+                    pass
+
+                # 再发图片
                 if os.path.isfile(url):
-                    chain.append(Image.fromFileSystem(url))
+                    yield event.chain_result([Image.fromFileSystem(url)])
                 else:
-                    chain.append(Image.fromURL(url))
-                yield event.chain_result(chain)
+                    yield event.chain_result([Image.fromURL(url)])
                 logger.info(f"画图成功，prompt: {prompt}")
             else:
                 yield event.plain_result("画图失败：API 返回的内容中未找到图片链接，可能是服务负载过高，请稍后重试。")
@@ -112,13 +119,20 @@ class GPTImagePlugin(Star):
                     "local_path": url if os.path.isfile(url) else None,
                     "prompt": new_prompt,
                 }
-                # 发送prompt + 图片
-                chain = [Plain(f"prompt: {new_prompt}\n")]
+                # 先单独发prompt
+                try:
+                    prompt_chain = MessageChain().message(f"prompt: {new_prompt}")
+                    await self.context.send_message(
+                        event.unified_msg_origin, prompt_chain
+                    )
+                except Exception:
+                    pass
+
+                # 再发图片
                 if os.path.isfile(url):
-                    chain.append(Image.fromFileSystem(url))
+                    yield event.chain_result([Image.fromFileSystem(url)])
                 else:
-                    chain.append(Image.fromURL(url))
-                yield event.chain_result(chain)
+                    yield event.chain_result([Image.fromURL(url)])
                 logger.info(f"修改图片成功，原prompt: {last['prompt']}，修改: {edit_instruction}")
             else:
                 yield event.plain_result("修改图片失败，API 返回的内容中未找到图片链接，请稍后重试。")
