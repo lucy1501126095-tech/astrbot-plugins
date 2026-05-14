@@ -61,7 +61,7 @@ class GPTImagePlugin(Star):
                     "url": url,
                     "prompt": prompt,
                 }
-                # 先单独发prompt
+                # 先单独发prompt给用户看
                 try:
                     prompt_chain = MessageChain().message(f"prompt: {prompt}")
                     await self.context.send_message(
@@ -70,11 +70,12 @@ class GPTImagePlugin(Star):
                 except Exception:
                     pass
 
-                # 再发图片
+                # yield里也带上prompt让模型上下文知道，图片一起返回
+                # on_decorating_result会清掉重复的prompt文本只留图片
                 if os.path.isfile(url):
-                    yield event.chain_result([Image.fromFileSystem(url)])
+                    yield event.chain_result([Plain(f"[画图完成] prompt: {prompt}"), Image.fromFileSystem(url)])
                 else:
-                    yield event.chain_result([Image.fromURL(url)])
+                    yield event.chain_result([Plain(f"[画图完成] prompt: {prompt}"), Image.fromURL(url)])
                 logger.info(f"画图成功，prompt: {prompt}")
             else:
                 yield event.plain_result("画图失败：API 返回的内容中未找到图片链接，可能是服务负载过高，请稍后重试。")
@@ -132,7 +133,7 @@ class GPTImagePlugin(Star):
                     "local_path": url if os.path.isfile(url) else None,
                     "prompt": new_prompt,
                 }
-                # 先单独发prompt
+                # 先单独发prompt给用户看
                 try:
                     prompt_chain = MessageChain().message(f"prompt: {new_prompt}")
                     await self.context.send_message(
@@ -141,11 +142,11 @@ class GPTImagePlugin(Star):
                 except Exception:
                     pass
 
-                # 再发图片
+                # yield带prompt让模型知道，on_decorating_result会清掉文本只留图片
                 if os.path.isfile(url):
-                    yield event.chain_result([Image.fromFileSystem(url)])
+                    yield event.chain_result([Plain(f"[画图完成] prompt: {new_prompt}"), Image.fromFileSystem(url)])
                 else:
-                    yield event.chain_result([Image.fromURL(url)])
+                    yield event.chain_result([Plain(f"[画图完成] prompt: {new_prompt}"), Image.fromURL(url)])
                 logger.info(f"修改图片成功，修改指令: {edit_instruction}")
             else:
                 yield event.plain_result("修改图片失败，API 返回的内容中未找到图片链接，请稍后重试。")
@@ -155,6 +156,25 @@ class GPTImagePlugin(Star):
         except Exception as e:
             logger.error(f"GPT Image 修改失败: {e}")
             yield event.plain_result(f"修改图片失败: {str(e)}")
+
+    # ─── 发送前清理：去掉yield里的prompt文本，用户已经通过send_message看到了 ───
+
+    @filter.on_decorating_result()
+    async def strip_image_prompt(self, event: AstrMessageEvent):
+        """发送前去掉[画图完成]标记，prompt已经单独发过了"""
+        import re
+        try:
+            result = event.get_result()
+            if not result or not result.chain:
+                return
+            for comp in result.chain:
+                if isinstance(comp, Plain) and comp.text:
+                    comp.text = re.sub(
+                        r'\[画图完成\] prompt: .+',
+                        '', comp.text
+                    ).strip()
+        except Exception:
+            pass
 
     # ─── API 调用 ───
 
