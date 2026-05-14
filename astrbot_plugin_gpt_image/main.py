@@ -24,7 +24,7 @@ class GPTImagePlugin(Star):
         self.api_base = config.get("image_api_base", "https://www.msuicode.com")
         self.api_key = config.get("image_api_key", "")
         self.model = config.get("model", "gpt-image-2")
-        self.timeout = config.get("timeout", 240)
+        self.timeout = config.get("timeout", 600)
         self.last_image_url = {}
         logger.info(f"GPT Image 插件加载: model={self.model}, timeout={self.timeout}")
 
