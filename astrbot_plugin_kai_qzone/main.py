@@ -22,7 +22,7 @@ from .core.monitor import QzoneMonitor
     "kai_qzone",
     "Sweetie & Kai",
     "Kai的QQ空间 - 秒评/评论区对话/转发概率评论/点赞/发说说（自动获取cookies）",
-    "1.1.0",
+    "1.2.0",
 )
 class KaiQzonePlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
