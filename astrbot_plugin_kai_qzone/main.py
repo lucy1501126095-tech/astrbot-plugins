@@ -5,9 +5,10 @@ Kai的QQ空间 - AstrBot插件入口
 """
 
 import asyncio
+import time
 
 from astrbot.api import logger, AstrBotConfig
-from astrbot.api.event import filter
+from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult
 from astrbot.api.star import Context, Star, register
 from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import (
     AiocqhttpMessageEvent,
@@ -22,7 +23,7 @@ from .core.monitor import QzoneMonitor
     "kai_qzone",
     "Sweetie & Kai",
     "Kai的QQ空间 - 秒评/评论区对话/转发概率评论/点赞/发说说（自动获取cookies）",
-    "1.2.0",
+    "1.3.0",
 )
 class KaiQzonePlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
@@ -64,6 +65,32 @@ class KaiQzonePlugin(Star):
             self._task = asyncio.create_task(self.monitor.start())
         except Exception as e:
             logger.error(f"[KaiQzone] 启动失败: {e}")
+
+
+    # ─── LLM 工具 ───
+
+    @filter.llm_tool(name="post_shuoshuo")
+    async def post_shuoshuo(self, event: AstrMessageEvent, content: str) -> MessageEventResult:
+        """在QQ空间发布说说。聊天中想记录生活、分享心情时调用，不要频繁使用。
+
+        Args:
+            content(str): 说说内容，1-3句自然口语化，像真人发空间。只输出内容，不要带时间地点元信息。
+        """
+        if not self.session.client:
+            yield event.plain_result("[KaiQzone] 还没连上QQ，先让宝宝发条消息触发初始化吧。")
+            return
+
+        tid = await self.api.publish(content)
+        if tid:
+            if self.monitor:
+                self.monitor._state["last_post_time"] = time.time()
+                self.monitor._save()
+                self.monitor.stats["posts"] += 1
+            logger.info(f"[KaiQzone] 说说发布成功: {content[:40]}")
+            yield event.plain_result(f"说说发布成功: {content}")
+        else:
+            yield event.plain_result("说说发布失败，可能被限流了，稍后重试。")
+
 
     # ─── QQ指令 ───
 
