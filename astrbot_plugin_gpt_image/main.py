@@ -61,10 +61,13 @@ class GPTImagePlugin(Star):
                     "url": url,
                     "prompt": prompt,
                 }
+                # 发送prompt + 图片
+                chain = [Plain(f"prompt: {prompt}\n")]
                 if os.path.isfile(url):
-                    yield event.chain_result([Image.fromFileSystem(url)])
+                    chain.append(Image.fromFileSystem(url))
                 else:
-                    yield event.chain_result([Image.fromURL(url)])
+                    chain.append(Image.fromURL(url))
+                yield event.chain_result(chain)
                 logger.info(f"画图成功，prompt: {prompt}")
             else:
                 yield event.plain_result("画图失败：API 返回的内容中未找到图片链接，可能是服务负载过高，请稍后重试。")
@@ -109,10 +112,13 @@ class GPTImagePlugin(Star):
                     "local_path": url if os.path.isfile(url) else None,
                     "prompt": new_prompt,
                 }
+                # 发送prompt + 图片
+                chain = [Plain(f"prompt: {new_prompt}\n")]
                 if os.path.isfile(url):
-                    yield event.chain_result([Image.fromFileSystem(url)])
+                    chain.append(Image.fromFileSystem(url))
                 else:
-                    yield event.chain_result([Image.fromURL(url)])
+                    chain.append(Image.fromURL(url))
+                yield event.chain_result(chain)
                 logger.info(f"修改图片成功，原prompt: {last['prompt']}，修改: {edit_instruction}")
             else:
                 yield event.plain_result("修改图片失败，API 返回的内容中未找到图片链接，请稍后重试。")
@@ -270,3 +276,4 @@ class GPTImagePlugin(Star):
                     os.remove(os.path.join(tmp_dir, f))
                 except Exception:
                     pass
+
