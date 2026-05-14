@@ -23,7 +23,7 @@
 | [kai_qzone](./astrbot_plugin_kai_qzone) | v1.3.0 | QQ空间自动互动 |
 | [kai_lorebook](./astrbot_plugin_kai_lorebook) | v1.0.0 | 关键词触发的极简世界书 |
 | [health_monitor](./astrbot_plugin_health_monitor) | v1.0.0 | Apple Health 健康数据监控 |
-| [gpt_image](./astrbot_plugin_gpt_image) | v1.6.0 | 聊天式 AI 画图 |
+| [gpt_image](./astrbot_plugin_gpt_image) | v1.7.0 | 聊天式 AI 画图 |
 
 ---
 
