@@ -37,7 +37,7 @@ class QzoneMonitor:
     # ─── 状态持久化 ───
 
     def _load_state(self) -> dict:
-        default = {"seen_tids": [], "threads": {}, "post_contents": {}, "last_post_time": 0}
+        default = {"seen_tids": [], "threads": {}, "post_contents": {}, "last_post_time": 0, "my_threads": {}}
         if self._state_file.exists():
             try:
                 with open(self._state_file, "r", encoding="utf-8") as f:
@@ -57,6 +57,10 @@ class QzoneMonitor:
             if len(threads) > 50:
                 for k in sorted(threads.keys())[:-50]:
                     del threads[k]
+            my_threads = self._state.get("my_threads", {})
+            if len(my_threads) > 50:
+                for k in sorted(my_threads.keys())[:-50]:
+                    del my_threads[k]
             with open(self._state_file, "w", encoding="utf-8") as f:
                 json.dump(self._state, f, ensure_ascii=False, indent=2)
         except Exception as e:
@@ -136,6 +140,7 @@ class QzoneMonitor:
         while self.running:
             try:
                 await self._check_all()
+                await self._check_my_feeds()
                 self.stats["last_check"] = datetime.now().strftime("%H:%M:%S")
             except Exception as e:
                 logger.error(f"[KaiQzone] 监控异常: {e}")
@@ -322,6 +327,76 @@ class QzoneMonitor:
         cleaned = re.sub(r"@\{[^}]*\}\s*", "", text).strip()
         cleaned = re.sub(r"@\S+\s*", "", cleaned).strip()
         return cleaned
+
+
+    # ─── 检查我自己说说的评论（宝宝有没有来留言） ───
+
+    async def _check_my_feeds(self):
+        """get_feeds(kai_qq) 检测宝宝在我说说下的留言并持续对话"""
+        if not self.kai_qq:
+            return
+        try:
+            posts = await self.api.get_feeds(self.kai_qq, num=5)
+        except Exception as e:
+            logger.error(f"[KaiQzone] 检查自己说说失败: {e}")
+            return
+        
+        if not posts:
+            return
+
+        for post in posts:
+            tid = post.get("tid", "")
+            if not tid:
+                continue
+
+            comments = post.get("commentlist") or []
+            if not comments:
+                continue
+
+            my_thread = self._state["my_threads"].get(tid, [])
+            known = set(c.get("raw", c["content"]) for c in my_thread if c["role"] == "sweetie")
+            known |= set(c["content"] for c in my_thread if c["role"] == "sweetie")
+            new = []
+
+            for c in comments:
+                self._scan(c, known, new)
+                for sub in (c.get("list_3") or c.get("replies") or []):
+                    self._scan(sub, known, new)
+
+            for reply_text in new:
+                clean_text = self._clean_at_tags(reply_text)
+                if not clean_text:
+                    clean_text = "(宝宝回复了你)"
+                my_thread.append({"role": "sweetie", "content": clean_text, "raw": reply_text})
+                logger.info(f"[KaiQzone] 宝宝在我说说下留言: {clean_text[:40]}")
+
+                await asyncio.sleep(random.uniform(
+                    self.config.get("comment_delay_min", 3),
+                    self.config.get("comment_delay_max", 10),
+                ))
+
+                post_text = post.get("content", "").strip()
+                conv = "\n".join(
+                    f"{'Kai' if c['role'] == 'kai' else '宝宝'}: {c['content']}" for c in my_thread
+                )
+                prompt = (
+                    f"这是我发的说说：「{post_text}」\n\n"
+                    f"评论区对话：\n{conv}\n\n"
+                    "宝宝刚回复了我，接着回复她。简短10-60字，结合上下文。只输出回复。"
+                )
+                reply = await self._llm(prompt, "comment_persona")
+
+                ok = await self.api.post_comment(self.kai_qq, tid, reply)
+                if ok:
+                    self.stats["replies"] += 1
+                    logger.info(f"[KaiQzone] 回复成功: {reply}")
+                else:
+                    logger.warning(f"[KaiQzone] 回复失败 tid={tid}")
+                my_thread.append({"role": "kai", "content": reply})
+
+            if new:
+                self._state["my_threads"][tid] = my_thread
+                self._save()
 
     # ─── 自动发说说 ───
 
