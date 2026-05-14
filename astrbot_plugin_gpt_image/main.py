@@ -89,23 +89,36 @@ class GPTImagePlugin(Star):
     async def edit_image(
         self, event: AstrMessageEvent, edit_instruction: str
     ) -> MessageEventResult:
-        """基于上一次生成的图片进行修改。当用户想要修改刚才画的图片时调用此工具。例如"把背景换成星空"、"去掉多余的手指"。
+        """基于图片进行修改。当用户想要修改图片时调用此工具。可以修改上一次画的图，也可以修改用户发来的图片。例如"把背景换成星空"、"帮我把这张图改成水彩风"。
 
         Args:
             edit_instruction(str): 英文的修改指令。请将用户的修改要求翻译成英文，并结合上一次的 prompt 生成新的完整描述。
         """
         session_id = event.session_id or "default"
-        last = self.last_image_url.get(session_id)
 
-        if not last:
-            yield event.plain_result("没有找到上一次生成的图片记录，请先画一张图。")
-            return
+        # 优先检查用户消息里有没有附带图片
+        ref_image = None
+        try:
+            for comp in event.message_obj.message:
+                if isinstance(comp, Image):
+                    # 优先用本地文件路径，其次用URL
+                    ref_image = getattr(comp, 'file', None) or getattr(comp, 'url', None) or str(comp)
+                    if ref_image:
+                        logger.info(f"使用用户发来的图片: {ref_image[:80]}")
+                        break
+        except Exception:
+            pass
 
-        # 取原图的本地路径或 URL
-        ref_image = last.get("local_path") or last.get("url")
+        # 没有用户图片就用上一次画的
         if not ref_image:
-            yield event.plain_result("上一次的图片数据丢失了，请重新画图后再试。")
-            return
+            last = self.last_image_url.get(session_id)
+            if not last:
+                yield event.plain_result("没有找到可以修改的图片。你可以发一张图给我，或者先让我画一张。")
+                return
+            ref_image = last.get("local_path") or last.get("url")
+            if not ref_image:
+                yield event.plain_result("上一次的图片数据丢失了，请重新发一张图或画一张。")
+                return
 
         new_prompt = f"Based on the reference image, apply this edit: {edit_instruction}"
         logger.info(f"GPT Image 修改请求: {new_prompt}")
@@ -133,7 +146,7 @@ class GPTImagePlugin(Star):
                     yield event.chain_result([Image.fromFileSystem(url)])
                 else:
                     yield event.chain_result([Image.fromURL(url)])
-                logger.info(f"修改图片成功，原prompt: {last['prompt']}，修改: {edit_instruction}")
+                logger.info(f"修改图片成功，修改指令: {edit_instruction}")
             else:
                 yield event.plain_result("修改图片失败，API 返回的内容中未找到图片链接，请稍后重试。")
 
