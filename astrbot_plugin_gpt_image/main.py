@@ -3,197 +3,183 @@ import os
 import base64
 import aiohttp
 import asyncio
-from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult, MessageChain
+from mcp.types import CallToolResult, TextContent
+from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult
 from astrbot.api.star import Context, Star, register
 from astrbot.api.message_components import Image, Plain
-from astrbot.api import logger
+from astrbot.api import logger, AstrBotConfig
+from astrbot.core.message.message_event_result import MessageChain
+
 
 @register(
     "astrbot_plugin_gpt_image",
     "Kai",
-    "GPT Image 2 画图插件，images=文生图 / edits=图生图",
-    "1.7.0",
+    "GPT Image 画图插件 - 文生图/图生图分离 + 报错透传 + 用户发图直接修改",
+    "2.0.0",
 )
 class GPTImagePlugin(Star):
-    def __init__(self, context: Context, config: dict):
+    def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
         self.config = config
+        self.api_base = config.get("api_base", "https://api.tu-zi.com/v1")
+        self.api_key = config.get("api_key", "")
         self.model = config.get("model", "gpt-image-2")
-        self.timeout = config.get("timeout", 120)
+        self.timeout = config.get("timeout", 240)
         self.last_image_url = {}
-        self.api_mode = config.get("api_mode", "images")
-        self.image_api_base = config.get("image_api_base", "")
-        self.image_api_key = config.get("image_api_key", "")
+        logger.info(f"GPT Image 插件加载: model={self.model}, timeout={self.timeout}")
 
-    def _image_to_base64(self, file_path: str) -> tuple[str, str]:
-        ext = os.path.splitext(file_path)[1].lower()
-        mime_map = {
-            ".png": "image/png",
-            ".jpg": "image/jpeg",
-            ".jpeg": "image/jpeg",
-            ".webp": "image/webp",
-            ".gif": "image/gif",
-        }
-        mime_type = mime_map.get(ext, "image/png")
-        with open(file_path, "rb") as f:
-            data = base64.b64encode(f.read()).decode("utf-8")
-        return data, mime_type
-
-    # ─── LLM 工具 ───
+    # ─────────────────────────────────────
+    # 工具1: 文生图
+    # ─────────────────────────────────────
 
     @filter.llm_tool(name="generate_image")
     async def generate_image(
         self, event: AstrMessageEvent, prompt: str
     ) -> MessageEventResult:
-        """根据用户的描述生成图片。当用户想要画图、生成图片、创建图像时调用此工具。
+        """根据用户描述生成图片。当用户想要画图、生成图片时调用此工具。如果用户发了一张图想修改，请调用 edit_image 而不是这个工具。
 
         Args:
-            prompt(str): 用于生成图片的英文描述。请将用户的描述翻译成详细的英文 prompt，包含风格、细节、构图等信息。
+            prompt(str): 用于生成图片的英文描述。请把用户的描述翻译成详细的英文 prompt，包含风格、细节、构图等信息。
         """
+        if not self.api_key:
+            yield CallToolResult(content=[TextContent(type="text", text="画图插件未配置 API Key。")])
+            return
+
+        # 检查用户是不是带了图片，如果带了应该走edit
+        for comp in event.message_obj.message:
+            if isinstance(comp, Image):
+                yield CallToolResult(content=[TextContent(
+                    type="text",
+                    text="检测到用户发了图片，应该调用 edit_image 而不是 generate_image。"
+                )])
+                return
+
         session_id = event.session_id or "default"
-        logger.info(f"GPT Image 生成请求: {prompt}")
+        logger.info(f"GPT Image 文生图: {prompt}")
 
         try:
-            url = await self._call_generations_api(prompt)
+            result = await self._call_images_api(prompt, session_id)
 
-            if url:
-                self.last_image_url[session_id] = {
-                    "url": url,
-                    "prompt": prompt,
-                }
-                # 先单独发prompt给用户看
-                try:
-                    prompt_chain = MessageChain().message(f"prompt: {prompt}")
-                    await self.context.send_message(
-                        event.unified_msg_origin, prompt_chain
-                    )
-                except Exception:
-                    pass
-
-                # yield里也带上prompt让模型上下文知道，图片一起返回
-                # on_decorating_result会清掉重复的prompt文本只留图片
-                if os.path.isfile(url):
-                    yield event.chain_result([Plain(f"[画图完成] prompt: {prompt}"), Image.fromFileSystem(url)])
-                else:
-                    yield event.chain_result([Plain(f"[画图完成] prompt: {prompt}"), Image.fromURL(url)])
-                logger.info(f"画图成功，prompt: {prompt}")
+            if result:
+                await self._send_to_user(event, result, prompt)
+                yield CallToolResult(content=[TextContent(
+                    type="text",
+                    text=f"[图片已成功生成并发送给用户，不需要再发送图片] 使用的 prompt: {prompt}"
+                )])
             else:
-                yield event.plain_result("画图失败：API 返回的内容中未找到图片链接，可能是服务负载过高，请稍后重试。")
+                yield CallToolResult(content=[TextContent(
+                    type="text",
+                    text="画图失败：API 未返回有效图片，可能是服务负载过高，请稍后重试。"
+                )])
 
         except asyncio.TimeoutError:
-            yield event.plain_result("画图请求超时了，图片生成通常需要较长时间，请稍后重试。")
+            yield CallToolResult(content=[TextContent(type="text", text="画图请求超时了，请稍后重试。")])
         except Exception as e:
-            logger.error(f"GPT Image 生成失败: {e}")
-            yield event.plain_result(f"画图失败: {str(e)}")
+            logger.error(f"GPT Image 文生图失败: {e}")
+            yield CallToolResult(content=[TextContent(type="text", text=f"画图失败: {str(e)}")])
+
+    # ─────────────────────────────────────
+    # 工具2: 图生图
+    # ─────────────────────────────────────
 
     @filter.llm_tool(name="edit_image")
     async def edit_image(
         self, event: AstrMessageEvent, edit_instruction: str
     ) -> MessageEventResult:
-        """基于图片进行修改。当用户想要修改图片时调用此工具。可以修改上一次画的图，也可以修改用户发来的图片。例如"把背景换成星空"、"帮我把这张图改成水彩风"。
+        """基于图片进行修改。可以修改用户发来的图，也可以修改上一次画的图。例如"把背景换成星空"、"把这张图改成水彩风"、"去掉多余的手指"。
 
         Args:
-            edit_instruction(str): 英文的修改指令。请将用户的修改要求翻译成英文，并结合上一次的 prompt 生成新的完整描述。
+            edit_instruction(str): 英文的修改指令。请将用户的修改要求翻译成英文，可以结合原图内容生成完整的描述。
         """
+        if not self.api_key:
+            yield CallToolResult(content=[TextContent(type="text", text="画图插件未配置 API Key。")])
+            return
+
         session_id = event.session_id or "default"
 
-        # 优先检查用户消息里有没有附带图片
+        # 优先使用用户发来的图片
         ref_image = None
-        try:
-            for comp in event.message_obj.message:
-                if isinstance(comp, Image):
-                    # 优先用本地文件路径，其次用URL
-                    ref_image = getattr(comp, 'file', None) or getattr(comp, 'url', None) or str(comp)
-                    if ref_image:
-                        logger.info(f"使用用户发来的图片: {ref_image[:80]}")
-                        break
-        except Exception:
-            pass
+        for comp in event.message_obj.message:
+            if isinstance(comp, Image):
+                ref_image = getattr(comp, 'file', None) or getattr(comp, 'url', None) or str(comp)
+                if ref_image:
+                    logger.info(f"使用用户发来的图片: {ref_image[:80]}")
+                    break
 
-        # 没有用户图片就用上一次画的
+        # 没有就用上一次画的
         if not ref_image:
             last = self.last_image_url.get(session_id)
             if not last:
-                yield event.plain_result("没有找到可以修改的图片。你可以发一张图给我，或者先让我画一张。")
+                yield CallToolResult(content=[TextContent(
+                    type="text",
+                    text="没有找到可以修改的图片。可以让用户发一张图过来，或者先画一张。"
+                )])
                 return
             ref_image = last.get("local_path") or last.get("url")
             if not ref_image:
-                yield event.plain_result("上一次的图片数据丢失了，请重新发一张图或画一张。")
+                yield CallToolResult(content=[TextContent(
+                    type="text",
+                    text="上一次的图片数据丢失了，请让用户重新发一张图或重新画一张。"
+                )])
                 return
 
-        new_prompt = f"Based on the reference image, apply this edit: {edit_instruction}"
-        logger.info(f"GPT Image 修改请求: {new_prompt}")
+        logger.info(f"GPT Image 图生图: {edit_instruction}")
 
         try:
-            url = await self._call_edits_api(new_prompt, ref_image)
+            result = await self._call_edits_api(ref_image, edit_instruction, session_id)
 
-            if url:
-                self.last_image_url[session_id] = {
-                    "url": url,
-                    "local_path": url if os.path.isfile(url) else None,
-                    "prompt": new_prompt,
-                }
-                # 先单独发prompt给用户看
-                try:
-                    prompt_chain = MessageChain().message(f"prompt: {new_prompt}")
-                    await self.context.send_message(
-                        event.unified_msg_origin, prompt_chain
-                    )
-                except Exception:
-                    pass
-
-                # yield带prompt让模型知道，on_decorating_result会清掉文本只留图片
-                if os.path.isfile(url):
-                    yield event.chain_result([Plain(f"[画图完成] prompt: {new_prompt}"), Image.fromFileSystem(url)])
-                else:
-                    yield event.chain_result([Plain(f"[画图完成] prompt: {new_prompt}"), Image.fromURL(url)])
-                logger.info(f"修改图片成功，修改指令: {edit_instruction}")
+            if result:
+                await self._send_to_user(event, result, edit_instruction)
+                yield CallToolResult(content=[TextContent(
+                    type="text",
+                    text=f"[修改后的图片已发送给用户，不需要再发送图片] 修改指令: {edit_instruction}"
+                )])
             else:
-                yield event.plain_result("修改图片失败，API 返回的内容中未找到图片链接，请稍后重试。")
+                yield CallToolResult(content=[TextContent(
+                    type="text",
+                    text="修改图片失败：API 未返回有效图片，请稍后重试。"
+                )])
 
         except asyncio.TimeoutError:
-            yield event.plain_result("修改图片请求超时，请稍后重试。")
+            yield CallToolResult(content=[TextContent(type="text", text="修改图片请求超时，请稍后重试。")])
         except Exception as e:
-            logger.error(f"GPT Image 修改失败: {e}")
-            yield event.plain_result(f"修改图片失败: {str(e)}")
+            logger.error(f"GPT Image 图生图失败: {e}")
+            yield CallToolResult(content=[TextContent(type="text", text=f"修改图片失败: {str(e)}")])
 
-    # ─── 发送前清理：去掉yield里的prompt文本，用户已经通过send_message看到了 ───
+    # ─────────────────────────────────────
+    # 发送给用户：图片 + prompt（不进LLM上下文）
+    # ─────────────────────────────────────
 
-    @filter.on_decorating_result()
-    async def strip_image_prompt(self, event: AstrMessageEvent):
-        """发送前去掉[画图完成]标记，prompt已经单独发过了"""
-        import re
+    async def _send_to_user(self, event: AstrMessageEvent, result: dict, prompt: str):
+        local_path = result.get("local_path")
+        image_url = result.get("url")
+
+        # 先发图片
         try:
-            result = event.get_result()
-            if not result or not result.chain:
-                return
-            for comp in result.chain:
-                if isinstance(comp, Plain) and comp.text:
-                    comp.text = re.sub(
-                        r'\[画图完成\] prompt: .+',
-                        '', comp.text
-                    ).strip()
-        except Exception:
-            pass
+            if local_path:
+                await event.send(MessageChain(chain=[Image.fromFileSystem(local_path)]))
+            elif image_url:
+                await event.send(MessageChain(chain=[Image.fromURL(image_url)]))
+        except Exception as send_err:
+            logger.warning(f"图片发送可能超时（但图片可能已成功发出）: {send_err}")
 
-    # ─── API 调用 ───
+        # 再发prompt
+        try:
+            await event.send(MessageChain(chain=[Plain(f"Prompt: {prompt}")]))
+        except Exception as send_err:
+            logger.warning(f"Prompt 发送失败: {send_err}")
 
-    def _build_url(self, path: str) -> str:
-        api_base = self.image_api_base.rstrip("/")
-        if "/v1" in api_base:
-            return api_base + path
-        return api_base + "/v1" + path
+    # ─────────────────────────────────────
+    # API 调用：文生图
+    # ─────────────────────────────────────
 
-    def _build_headers(self) -> dict:
-        return {
-            "Authorization": f"Bearer {self.image_api_key}",
+    async def _call_images_api(self, prompt: str, session_id: str) -> dict | None:
+        """POST /v1/images/generations"""
+        url = f"{self.api_base}/images/generations"
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
-
-    async def _call_generations_api(self, prompt: str) -> str | None:
-        """文生图：POST /v1/images/generations"""
-        url = self._build_url("/images/generations")
-        headers = self._build_headers()
         payload = {
             "model": self.model,
             "prompt": prompt,
@@ -204,56 +190,66 @@ class GPTImagePlugin(Star):
         async with aiohttp.ClientSession() as session:
             async with session.post(
                 url, json=payload, headers=headers,
-                timeout=aiohttp.ClientTimeout(total=self.timeout)
+                timeout=aiohttp.ClientTimeout(total=self.timeout),
             ) as resp:
-                data = await resp.json()
+                # 错误直接透传给模型
                 if resp.status != 200:
-                    # 提取API错误信息直接抛出
-                    err_msg = data.get("error", {}).get("message", str(data))
-                    logger.error(f"Image API 错误 ({resp.status}): {err_msg[:200]}")
-                    raise Exception(f"API {resp.status}: {err_msg[:300]}")
-                if "data" in data and len(data["data"]) > 0:
-                    item = data["data"][0]
-                    if "url" in item and item["url"]:
-                        return item["url"]
-                    elif "b64_json" in item and item["b64_json"]:
-                        return self._save_b64(item["b64_json"])
-                return None
+                    try:
+                        err_data = await resp.json()
+                        err_msg = err_data.get("error", {}).get("message", str(err_data))
+                    except Exception:
+                        err_msg = await resp.text()
+                    logger.error(f"images API 错误 ({resp.status}): {err_msg[:300]}")
+                    raise Exception(f"API {resp.status}: {err_msg[:400]}")
 
-    async def _call_edits_api(self, prompt: str, ref_image: str) -> str | None:
-        """图生图：POST /v1/images/edits，需要参考图"""
-        url = self._build_url("/images/edits")
+                data = await resp.json()
 
-        # 如果参考图是本地文件，用 multipart 上传；否则用 URL
-        if os.path.isfile(ref_image):
-            b64, mime = self._image_to_base64(ref_image)
-            payload = {
-                "model": self.model,
-                "image": f"data:{mime};base64,{b64}",
-                "prompt": prompt,
-                "n": 1,
-                "size": "1024x1024",
-            }
-            headers = self._build_headers()
+        logger.info(f"images API 返回: {str(data)[:200]}")
+        return await self._parse_image_result(data, prompt, session_id)
+
+    # ─────────────────────────────────────
+    # API 调用：图生图
+    # ─────────────────────────────────────
+
+    async def _call_edits_api(self, ref_image: str, prompt: str, session_id: str) -> dict | None:
+        """POST /v1/images/edits"""
+        url = f"{self.api_base}/images/edits"
+
+        is_local = os.path.isfile(ref_image)
+
+        if is_local:
+            # multipart上传
+            data = aiohttp.FormData()
+            data.add_field("model", self.model)
+            data.add_field("prompt", prompt)
+            data.add_field("n", "1")
+            data.add_field("size", "1024x1024")
+            with open(ref_image, "rb") as f:
+                img_bytes = f.read()
+            data.add_field("image", img_bytes, filename="image.png", content_type="image/png")
+
+            headers = {"Authorization": f"Bearer {self.api_key}"}
+
             async with aiohttp.ClientSession() as session:
                 async with session.post(
-                    url, json=payload, headers=headers,
-                    timeout=aiohttp.ClientTimeout(total=self.timeout)
+                    url, data=data, headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=self.timeout),
                 ) as resp:
-                    data = await resp.json()
                     if resp.status != 200:
-                        err_msg = data.get("error", {}).get("message", str(data))
-                        logger.error(f"Edits API 错误 ({resp.status}): {err_msg[:200]}")
-                        raise Exception(f"API {resp.status}: {err_msg[:300]}")
-                    if "data" in data and len(data["data"]) > 0:
-                        item = data["data"][0]
-                        if "url" in item and item["url"]:
-                            return item["url"]
-                        elif "b64_json" in item and item["b64_json"]:
-                            return self._save_b64(item["b64_json"])
-                    return None
+                        try:
+                            err_data = await resp.json()
+                            err_msg = err_data.get("error", {}).get("message", str(err_data))
+                        except Exception:
+                            err_msg = await resp.text()
+                        logger.error(f"edits API 错误 ({resp.status}): {err_msg[:300]}")
+                        raise Exception(f"API {resp.status}: {err_msg[:400]}")
+                    resp_data = await resp.json()
         else:
-            # ref_image is a URL — 部分 API 支持直接用 URL
+            # URL方式（部分API支持）
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            }
             payload = {
                 "model": self.model,
                 "image": ref_image,
@@ -261,42 +257,83 @@ class GPTImagePlugin(Star):
                 "n": 1,
                 "size": "1024x1024",
             }
-            headers = self._build_headers()
             async with aiohttp.ClientSession() as session:
                 async with session.post(
                     url, json=payload, headers=headers,
-                    timeout=aiohttp.ClientTimeout(total=self.timeout)
+                    timeout=aiohttp.ClientTimeout(total=self.timeout),
                 ) as resp:
-                    data = await resp.json()
                     if resp.status != 200:
-                        err_msg = data.get("error", {}).get("message", str(data))
-                        logger.error(f"Edits API 错误 ({resp.status}): {err_msg[:200]}")
-                        raise Exception(f"API {resp.status}: {err_msg[:300]}")
-                    if "data" in data and len(data["data"]) > 0:
-                        item = data["data"][0]
-                        if "url" in item and item["url"]:
-                            return item["url"]
-                        elif "b64_json" in item and item["b64_json"]:
-                            return self._save_b64(item["b64_json"])
-                    return None
+                        try:
+                            err_data = await resp.json()
+                            err_msg = err_data.get("error", {}).get("message", str(err_data))
+                        except Exception:
+                            err_msg = await resp.text()
+                        logger.error(f"edits API 错误 ({resp.status}): {err_msg[:300]}")
+                        raise Exception(f"API {resp.status}: {err_msg[:400]}")
+                    resp_data = await resp.json()
 
-    def _save_b64(self, b64_data: str) -> str:
-        tmp_dir = os.path.join(os.path.dirname(__file__), "tmp")
-        os.makedirs(tmp_dir, exist_ok=True)
-        file_path = os.path.join(tmp_dir, f"b64_{id(b64_data)}.png")
-        with open(file_path, "wb") as f:
-            f.write(base64.b64decode(b64_data))
-        return file_path
+        logger.info(f"edits API 返回: {str(resp_data)[:200]}")
+        return await self._parse_image_result(resp_data, prompt, session_id)
+
+    # ─────────────────────────────────────
+    # 解析返回结果
+    # ─────────────────────────────────────
+
+    async def _parse_image_result(self, data: dict, prompt: str, session_id: str) -> dict | None:
+        items = data.get("data", [])
+        if not items:
+            return None
+
+        item = items[0]
+
+        if "b64_json" in item and item["b64_json"]:
+            local_path = await self._save_b64(item["b64_json"], session_id)
+            if local_path:
+                self.last_image_url[session_id] = {
+                    "url": None,
+                    "local_path": local_path,
+                    "prompt": prompt,
+                }
+                return {"local_path": local_path, "url": None}
+
+        if "url" in item and item["url"]:
+            image_url = item["url"]
+            local_path = await self._download_image(image_url, session_id)
+            self.last_image_url[session_id] = {
+                "url": image_url,
+                "local_path": local_path,
+                "prompt": prompt,
+            }
+            return {"local_path": local_path, "url": image_url}
+
+        return None
+
+    # ─────────────────────────────────────
+    # 文件工具
+    # ─────────────────────────────────────
+
+    async def _save_b64(self, b64_data: str, session_id: str) -> str | None:
+        try:
+            tmp_dir = os.path.join(os.path.dirname(__file__), "tmp")
+            os.makedirs(tmp_dir, exist_ok=True)
+            file_path = os.path.join(
+                tmp_dir, f"{session_id.replace(':', '_')}_{id(b64_data)}.png"
+            )
+            with open(file_path, "wb") as f:
+                f.write(base64.b64decode(b64_data))
+            return file_path
+        except Exception as e:
+            logger.error(f"保存 b64 图片失败: {e}")
+            return None
 
     async def _download_image(self, url: str, session_id: str) -> str | None:
-        """下载图片到本地临时目录"""
         try:
             tmp_dir = os.path.join(os.path.dirname(__file__), "tmp")
             os.makedirs(tmp_dir, exist_ok=True)
 
-            ext = ".webp"
-            if ".png" in url:
-                ext = ".png"
+            ext = ".png"
+            if ".webp" in url:
+                ext = ".webp"
             elif ".jpg" in url or ".jpeg" in url:
                 ext = ".jpg"
 
@@ -327,4 +364,3 @@ class GPTImagePlugin(Star):
                     os.remove(os.path.join(tmp_dir, f))
                 except Exception:
                     pass
-
