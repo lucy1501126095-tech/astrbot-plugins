@@ -212,75 +212,57 @@ class GPTImagePlugin(Star):
     # ─────────────────────────────────────
 
     async def _call_edits_api(self, ref_image: str, prompt: str, session_id: str) -> dict | None:
-        """POST /v1/images/edits"""
+        """POST /v1/images/edits - multipart格式（对齐OpenAI官方SDK）"""
         url = f"{self.api_base}/v1/images/edits"
 
         is_local = os.path.isfile(ref_image)
 
-        if is_local:
-            # 本地文件转base64，走JSON方式
-            import base64
-            import mimetypes
-            mime, _ = mimetypes.guess_type(ref_image)
-            if not mime:
-                mime = "image/png"
-            with open(ref_image, "rb") as f:
-                img_bytes = f.read()
-            img_b64 = base64.b64encode(img_bytes).decode("utf-8")
-            data_url = f"data:{mime};base64,{img_b64}"
+        # 如果是URL，先下载到本地
+        if not is_local:
+            local_tmp = await self._download_image(ref_image, session_id + "_ref")
+            if not local_tmp:
+                raise Exception(f"无法下载参考图: {ref_image[:80]}")
+            ref_image = local_tmp
 
-            headers = {
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-            }
-            payload = {
-                "model": self.model,
-                "image": data_url,
-                "prompt": prompt,
-                "n": 1,
-                "size": "1024x1024",
-            }
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    url, json=payload, headers=headers,
-                    timeout=aiohttp.ClientTimeout(total=self.timeout),
-                ) as resp:
-                    if resp.status != 200:
-                        try:
-                            err_data = await resp.json()
-                            err_msg = err_data.get("error", {}).get("message", str(err_data))
-                        except Exception:
-                            err_msg = await resp.text()
-                        logger.error(f"edits API 错误 ({resp.status}): {err_msg[:300]}")
-                        raise Exception(f"API {resp.status}: {err_msg[:400]}")
-                    resp_data = await resp.json()
-        else:
-            # URL方式
-            headers = {
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-            }
-            payload = {
-                "model": self.model,
-                "image": ref_image,
-                "prompt": prompt,
-                "n": 1,
-                "size": "1024x1024",
-            }
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    url, json=payload, headers=headers,
-                    timeout=aiohttp.ClientTimeout(total=self.timeout),
-                ) as resp:
-                    if resp.status != 200:
-                        try:
-                            err_data = await resp.json()
-                            err_msg = err_data.get("error", {}).get("message", str(err_data))
-                        except Exception:
-                            err_msg = await resp.text()
-                        logger.error(f"edits API 错误 ({resp.status}): {err_msg[:300]}")
-                        raise Exception(f"API {resp.status}: {err_msg[:400]}")
-                    resp_data = await resp.json()
+        # 读图片
+        with open(ref_image, "rb") as f:
+            img_bytes = f.read()
+
+        # 判断content_type
+        import mimetypes
+        mime, _ = mimetypes.guess_type(ref_image)
+        if not mime or not mime.startswith("image/"):
+            mime = "image/png"
+
+        # 文件名取basename
+        filename = os.path.basename(ref_image)
+        if "." not in filename:
+            filename = f"image.{mime.split('/')[-1]}"
+
+        # 标准multipart格式，字段顺序对齐OpenAI SDK
+        data = aiohttp.FormData()
+        data.add_field("image", img_bytes, filename=filename, content_type=mime)
+        data.add_field("prompt", prompt)
+        data.add_field("model", self.model)
+        data.add_field("n", "1")
+        data.add_field("size", "1024x1024")
+
+        headers = {"Authorization": f"Bearer {self.api_key}"}
+
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                url, data=data, headers=headers,
+                timeout=aiohttp.ClientTimeout(total=self.timeout),
+            ) as resp:
+                if resp.status != 200:
+                    try:
+                        err_data = await resp.json()
+                        err_msg = err_data.get("error", {}).get("message", str(err_data))
+                    except Exception:
+                        err_msg = await resp.text()
+                    logger.error(f"edits API 错误 ({resp.status}): {err_msg[:300]}")
+                    raise Exception(f"API {resp.status}: {err_msg[:400]}")
+                resp_data = await resp.json()
 
         logger.info(f"edits API 返回: {str(resp_data)[:200]}")
         return await self._parse_image_result(resp_data, prompt, session_id)
@@ -374,3 +356,4 @@ class GPTImagePlugin(Star):
                     os.remove(os.path.join(tmp_dir, f))
                 except Exception:
                     pass
+
