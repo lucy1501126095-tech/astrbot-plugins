@@ -227,8 +227,11 @@ class GPTImagePlugin(Star):
     # ─────────────────────────────────────
 
     async def _call_edits_api(self, ref_image: str, prompt: str, session_id: str) -> dict | None:
-        """POST /v1/images/edits - multipart格式（对齐OpenAI官方SDK）"""
-        url = f"{self.api_base}/v1/images/edits"
+        """图生图：走 /v1/chat/completions 多模态接口
+        中转站的 /v1/images/edits 经常假支持（convert_request_failed），
+        chat/completions 多模态是真支持的兼容路径。
+        """
+        url = f"{self.api_base}/v1/chat/completions"
 
         is_local = os.path.isfile(ref_image)
 
@@ -239,34 +242,51 @@ class GPTImagePlugin(Star):
                 raise Exception(f"无法下载参考图: {ref_image[:80]}")
             ref_image = local_tmp
 
-        # 读图片
+        # 读图片转base64
         with open(ref_image, "rb") as f:
             img_bytes = f.read()
 
-        # 判断content_type
         import mimetypes
         mime, _ = mimetypes.guess_type(ref_image)
         if not mime or not mime.startswith("image/"):
             mime = "image/png"
 
-        # 文件名取basename
-        filename = os.path.basename(ref_image)
-        if "." not in filename:
-            filename = f"image.{mime.split('/')[-1]}"
+        img_b64 = base64.b64encode(img_bytes).decode("utf-8")
+        data_url = f"data:{mime};base64,{img_b64}"
 
-        # 标准multipart格式，字段顺序对齐OpenAI SDK
-        data = aiohttp.FormData()
-        data.add_field("image", img_bytes, filename=filename, content_type=mime)
-        data.add_field("prompt", prompt)
-        data.add_field("model", self.model)
-        data.add_field("n", "1")
-        data.add_field("size", "1024x1024")
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": self.model,
+            "stream": False,
+            "quality": "medium",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": f"请基于这张参考图进行修改：{prompt}"
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": data_url,
+                                "detail": "high"
+                            }
+                        }
+                    ]
+                }
+            ]
+        }
 
-        headers = {"Authorization": f"Bearer {self.api_key}"}
+        logger.info(f"chat/completions 图生图请求: model={self.model}")
 
         async with aiohttp.ClientSession() as session:
             async with session.post(
-                url, data=data, headers=headers,
+                url, json=payload, headers=headers,
                 timeout=aiohttp.ClientTimeout(total=self.timeout),
             ) as resp:
                 if resp.status != 200:
@@ -275,12 +295,88 @@ class GPTImagePlugin(Star):
                         err_msg = err_data.get("error", {}).get("message", str(err_data))
                     except Exception:
                         err_msg = await resp.text()
-                    logger.error(f"edits API 错误 ({resp.status}): {err_msg[:300]}")
+                    logger.error(f"chat API 错误 ({resp.status}): {err_msg[:300]}")
                     raise Exception(f"API {resp.status}: {err_msg[:400]}")
                 resp_data = await resp.json()
 
-        logger.info(f"edits API 返回: {str(resp_data)[:200]}")
-        return await self._parse_image_result(resp_data, prompt, session_id)
+        logger.info(f"chat API 返回 keys: {list(resp_data.keys())}")
+        local_path = await self._extract_image_from_chat(resp_data, session_id)
+        if local_path:
+            self.last_image_url[session_id] = {
+                "url": None,
+                "local_path": local_path,
+                "prompt": prompt,
+            }
+            return {"local_path": local_path, "url": None}
+        return None
+
+    # ─────────────────────────────────────
+    # 从 chat/completions 响应中提取图片（多种格式兼容）
+    # ─────────────────────────────────────
+
+    async def _extract_image_from_chat(self, data: dict, session_id: str) -> str | None:
+        """从 chat 响应里抠图片，兼容多种返回格式"""
+        msg = data.get("choices", [{}])[0].get("message", {})
+        if not msg:
+            logger.error("chat 响应中无 message")
+            return None
+
+        # 1. message.images 数组
+        if isinstance(msg.get("images"), list) and len(msg["images"]) > 0:
+            img = msg["images"][0]
+            if img.get("b64_json"):
+                return await self._save_b64(img["b64_json"], session_id)
+            if img.get("url"):
+                return await self._download_image(img["url"], session_id)
+
+        # 2. message.content 是数组（multimodal 返回）
+        if isinstance(msg.get("content"), list):
+            for part in msg["content"]:
+                if part.get("type") == "image_url" and part.get("image_url", {}).get("url"):
+                    u = part["image_url"]["url"]
+                    if u.startswith("data:"):
+                        b = u.split(",", 1)[1]
+                        return await self._save_b64(b, session_id)
+                    return await self._download_image(u, session_id)
+                if part.get("type") in ("image", "image_generation") and part.get("image"):
+                    return await self._save_b64(part["image"], session_id)
+                if part.get("b64_json"):
+                    return await self._save_b64(part["b64_json"], session_id)
+                if part.get("venus_multimodal_url", {}).get("url"):
+                    u = part["venus_multimodal_url"]["url"]
+                    if u.startswith("data:"):
+                        b = u.split(",", 1)[1]
+                        return await self._save_b64(b, session_id)
+                    return await self._download_image(u, session_id)
+
+        # 3. message.content 是字符串
+        content = msg.get("content", "")
+        if isinstance(content, str) and content:
+            logger.info(f"chat 文本响应(前300): {content[:300]}")
+            # 3a. 内嵌 data:base64
+            b64_match = re.search(r"data:image/\w+;base64,([A-Za-z0-9+/=]{100,})", content)
+            if b64_match:
+                return await self._save_b64(b64_match.group(1), session_id)
+            # 3b. Markdown 图片
+            md_match = re.search(r"!\[.*?\]\((https?://[^\s)]+)\)", content)
+            if md_match:
+                return await self._download_image(md_match.group(1), session_id)
+            # 3c. 裸URL
+            url_match = re.search(r"https?://[^\s]+\.(?:png|jpg|jpeg|webp|gif)", content, re.IGNORECASE)
+            if url_match:
+                return await self._download_image(url_match.group(0), session_id)
+
+        # 4. 顶层 data 数组（部分中转把 images 格式塞回来）
+        items = data.get("data", [])
+        if items:
+            it = items[0]
+            if it.get("url"):
+                return await self._download_image(it["url"], session_id)
+            if it.get("b64_json"):
+                return await self._save_b64(it["b64_json"], session_id)
+
+        logger.error(f"无法从 chat 响应提取图片，前500字: {str(data)[:500]}")
+        return None
 
     # ─────────────────────────────────────
     # 解析返回结果
