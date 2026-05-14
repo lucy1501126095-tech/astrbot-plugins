@@ -4,6 +4,7 @@ Kai's Lorebook - 极简世界书插件
 """
 
 import re
+from datetime import datetime
 from pathlib import Path
 
 import yaml
@@ -78,6 +79,7 @@ class KaiLorebook(Star):
                     "priority": int(item.get("priority", 50)),
                     "keywords": item.get("keywords", []),
                     "content": str(item.get("content", "")),
+                    "date_trigger": item.get("date_trigger", None),
                 }
                 if isinstance(entry["keywords"], str):
                     entry["keywords"] = [entry["keywords"]]
@@ -96,13 +98,16 @@ class KaiLorebook(Star):
         try:
             data = []
             for e in self.entries:
-                data.append({
+                item = {
                     "name": e["name"],
                     "enabled": e["enabled"],
                     "priority": e["priority"],
                     "keywords": e["keywords"],
                     "content": e["content"],
-                })
+                }
+                if e.get("date_trigger"):
+                    item["date_trigger"] = e["date_trigger"]
+                data.append(item)
             with open(self.lorebook_path, "w", encoding="utf-8") as f:
                 yaml.dump(data, f, allow_unicode=True, default_flow_style=False)
         except Exception as e:
@@ -111,6 +116,15 @@ class KaiLorebook(Star):
     def _match_entry(self, entry: dict, text: str) -> bool:
         if not entry.get("enabled", True):
             return False
+
+        # 日期触发：如果今天匹配 date_trigger，直接命中
+        date_trigger = entry.get("date_trigger")
+        if date_trigger:
+            today = datetime.now().strftime("%m-%d")
+            if today == date_trigger:
+                return True
+
+        # 关键词匹配
         keywords = entry.get("keywords", [])
         if not keywords:
             keywords = [re.escape(entry["name"])]
@@ -317,3 +331,4 @@ class KaiLorebook(Star):
             f"世界书已重载，共 {len(self.entries)} 个条目 "
             f"({sum(1 for e in self.entries if e['enabled'])} 个启用)"
         )
+
