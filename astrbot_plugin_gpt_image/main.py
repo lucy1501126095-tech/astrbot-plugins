@@ -24,7 +24,7 @@ class GPTImagePlugin(Star):
         self.api_base = config.get("image_api_base", "https://www.msuicode.com")
         self.api_key = config.get("image_api_key", "")
         self.model = config.get("model", "gpt-image-2")
-        self.timeout = config.get("timeout", 600)
+        self.timeout = config.get("timeout", 240)
         self.last_image_url = {}
         logger.info(f"GPT Image 插件加载: model={self.model}, timeout={self.timeout}")
 
@@ -189,7 +189,7 @@ class GPTImagePlugin(Star):
     # ─────────────────────────────────────
 
     async def _call_images_api(self, prompt: str, session_id: str) -> dict | None:
-        """POST /v1/images/generations"""
+        """POST /v1/images/generations - 带偶发错误重试"""
         url = f"{self.api_base}/v1/images/generations"
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -202,25 +202,57 @@ class GPTImagePlugin(Star):
             "size": "1024x1024",
         }
 
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                url, json=payload, headers=headers,
-                timeout=aiohttp.ClientTimeout(total=self.timeout),
-            ) as resp:
-                # 错误直接透传给模型
-                if resp.status != 200:
-                    try:
-                        err_data = await resp.json()
-                        err_msg = err_data.get("error", {}).get("message", str(err_data))
-                    except Exception:
-                        err_msg = await resp.text()
-                    logger.error(f"images API 错误 ({resp.status}): {err_msg[:300]}")
-                    raise Exception(f"API {resp.status}: {err_msg[:400]}")
+        last_err = None
+        max_retries = 2  # 总共尝试3次
 
-                data = await resp.json()
+        for attempt in range(max_retries + 1):
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(
+                        url, json=payload, headers=headers,
+                        timeout=aiohttp.ClientTimeout(total=self.timeout),
+                    ) as resp:
+                        if resp.status != 200:
+                            try:
+                                err_data = await resp.json()
+                                err_msg = err_data.get("error", {}).get("message", str(err_data))
+                            except Exception:
+                                err_msg = await resp.text()
+                            logger.error(f"images API 错误 ({resp.status}) 第{attempt+1}次: {err_msg[:300]}")
 
-        logger.info(f"images API 返回: {str(data)[:200]}")
-        return await self._parse_image_result(data, prompt, session_id)
+                            # 5xx 或 stream disconnected 这种偶发错误重试
+                            is_transient = (
+                                500 <= resp.status < 600 or
+                                "stream disconnected" in err_msg.lower() or
+                                "timeout" in err_msg.lower()
+                            )
+                            if is_transient and attempt < max_retries:
+                                await asyncio.sleep(2 ** attempt)  # 1秒、2秒
+                                last_err = f"API {resp.status}: {err_msg[:400]}"
+                                continue
+                            raise Exception(f"API {resp.status}: {err_msg[:400]}")
+
+                        data = await resp.json()
+
+                logger.info(f"images API 返回(第{attempt+1}次): {str(data)[:200]}")
+                return await self._parse_image_result(data, prompt, session_id)
+
+            except asyncio.TimeoutError:
+                last_err = "请求超时"
+                if attempt < max_retries:
+                    logger.warning(f"images API 第{attempt+1}次超时，重试中")
+                    await asyncio.sleep(2 ** attempt)
+                    continue
+                raise
+            except aiohttp.ClientError as e:
+                last_err = f"网络错误: {e}"
+                if attempt < max_retries:
+                    logger.warning(f"images API 第{attempt+1}次网络错误: {e}，重试中")
+                    await asyncio.sleep(2 ** attempt)
+                    continue
+                raise Exception(last_err)
+
+        raise Exception(last_err or "未知错误")
 
     # ─────────────────────────────────────
     # API 调用：图生图
