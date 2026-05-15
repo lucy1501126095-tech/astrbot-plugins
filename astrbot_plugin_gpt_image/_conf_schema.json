@@ -1,21 +1,21 @@
 {
     "image_api_base": {
-        "description": "中转站地址（如 https://www.msuicode.com，不要带 /v1 路径）",
+        "description": "① 服务地址。填中转站的网址，例如 https://www.msuicode.com 或 https://api.denxio.top。复制时不要带后面的斜杠或 v1。",
         "type": "string",
         "default": "https://www.msuicode.com"
     },
     "image_api_key": {
-        "description": "中转站 API Key",
+        "description": "② 密钥。中转站后台给你的那一长串，以 sk- 开头。",
         "type": "string",
         "default": ""
     },
     "model": {
-        "description": "画图模型名称",
+        "description": "③ 模型名（一般不用改）。默认 gpt-image-2，如果中转站说要换别的型号再填。",
         "type": "string",
         "default": "gpt-image-2"
     },
     "timeout": {
-        "description": "请求超时时间（秒）",
+        "description": "④ 等图最长秒数（一般不用改）。复杂的图生成慢，600 秒够用。",
         "type": "int",
         "default": 600
     }
