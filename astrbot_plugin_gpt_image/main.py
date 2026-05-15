@@ -23,10 +23,11 @@ class GPTImagePlugin(Star):
         self.config = config
         self.api_base = config.get("image_api_base", "https://www.msuicode.com")
         self.api_key = config.get("image_api_key", "")
+        self.api_mode = config.get("api_mode", "images")
         self.model = config.get("model", "gpt-image-2")
-        self.timeout = config.get("timeout", 240)
+        self.timeout = config.get("timeout", 600)
         self.last_image_url = {}
-        logger.info(f"GPT Image 插件加载: model={self.model}, timeout={self.timeout}")
+        logger.info(f"GPT Image 插件加载: model={self.model}, mode={self.api_mode}, timeout={self.timeout}")
 
     # ─────────────────────────────────────
     # 工具1: 文生图
@@ -189,9 +190,16 @@ class GPTImagePlugin(Star):
     # ─────────────────────────────────────
 
     async def _call_images_api(self, prompt: str, session_id: str) -> dict | None:
-        """文生图：POST /v1/images/generations
-        gpt-image-2 在严格的中转站上只支持标准 OpenAI 图片端点，不能走 chat。
+        """文生图：根据 api_mode 走对应端点
+        - images: 标准 /v1/images/generations（denxio.top 这类严格站）
+        - chat:   /v1/chat/completions 纯文本（msuicode 这类宽松站）
         """
+        if self.api_mode == "chat":
+            return await self._try_chat_completions_text(prompt, session_id)
+        return await self._try_images_generations(prompt, session_id)
+
+    async def _try_images_generations(self, prompt: str, session_id: str) -> dict | None:
+        """POST /v1/images/generations 带重试"""
         url = f"{self.api_base}/v1/images/generations"
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -222,12 +230,22 @@ class GPTImagePlugin(Star):
                                 err_msg = await resp.text()
                             logger.error(f"images API 错误 ({resp.status}) 第{attempt+1}次: {err_msg[:300]}")
 
+                            # 路由错误不重试，直接抛
+                            is_routing = (
+                                "only supported" in err_msg.lower() or
+                                "not supported" in err_msg.lower() or
+                                "convert_request_failed" in err_msg.lower() or
+                                resp.status == 404
+                            )
+                            if is_routing:
+                                raise Exception(f"API {resp.status}: {err_msg[:400]}")
+
+                            # 网络/上游抽风重试
                             is_transient = (
                                 500 <= resp.status < 600 or
                                 "stream disconnected" in err_msg.lower() or
                                 "timeout" in err_msg.lower()
-                            ) and "only supported on" not in err_msg.lower()
-                            # 路由错误不重试，只重试网络/上游抽风
+                            )
                             if is_transient and attempt < max_retries:
                                 await asyncio.sleep(2 ** attempt)
                                 last_err = f"API {resp.status}: {err_msg[:400]}"
@@ -256,16 +274,53 @@ class GPTImagePlugin(Star):
 
         raise Exception(last_err or "未知错误")
 
+    async def _try_chat_completions_text(self, prompt: str, session_id: str) -> dict | None:
+        """走 /v1/chat/completions 纯文本（msuicode 类宽松站）"""
+        url = f"{self.api_base}/v1/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": self.model,
+            "messages": [{"role": "user", "content": prompt}],
+        }
+
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                url, json=payload, headers=headers,
+                timeout=aiohttp.ClientTimeout(total=self.timeout),
+            ) as resp:
+                if resp.status != 200:
+                    try:
+                        err_data = await resp.json()
+                        err_msg = err_data.get("error", {}).get("message", str(err_data))
+                    except Exception:
+                        err_msg = await resp.text()
+                    logger.error(f"chat API 错误 ({resp.status}): {err_msg[:300]}")
+                    raise Exception(f"API {resp.status}: {err_msg[:400]}")
+                resp_data = await resp.json()
+
+        logger.info(f"chat API 返回 keys: {list(resp_data.keys())}")
+        local_path = await self._extract_image_from_chat(resp_data, session_id)
+        if local_path:
+            self.last_image_url[session_id] = {
+                "url": None,
+                "local_path": local_path,
+                "prompt": prompt,
+            }
+            return {"local_path": local_path, "url": None}
+        return None
+
     # ─────────────────────────────────────
     # API 调用：图生图
     # ─────────────────────────────────────
 
     async def _call_edits_api(self, ref_image: str, prompt: str, session_id: str) -> dict | None:
-        """图生图：POST /v1/images/edits (multipart)
-        gpt-image-2 在严格的中转站上只支持标准 OpenAI 图片端点。
+        """图生图：根据 api_mode 走对应端点
+        - images: 标准 /v1/images/edits multipart（denxio.top 类严格站）
+        - chat:   /v1/chat/completions 多模态（msuicode 类宽松站）
         """
-        url = f"{self.api_base}/v1/images/edits"
-
         is_local = os.path.isfile(ref_image)
 
         # 如果是URL，先下载到本地
@@ -275,7 +330,14 @@ class GPTImagePlugin(Star):
                 raise Exception(f"无法下载参考图: {ref_image[:80]}")
             ref_image = local_tmp
 
-        # 读图片
+        if self.api_mode == "chat":
+            return await self._try_chat_completions_multimodal(ref_image, prompt, session_id)
+        return await self._try_images_edits(ref_image, prompt, session_id)
+
+    async def _try_images_edits(self, ref_image: str, prompt: str, session_id: str) -> dict | None:
+        """POST /v1/images/edits multipart 带重试"""
+        url = f"{self.api_base}/v1/images/edits"
+
         with open(ref_image, "rb") as f:
             img_bytes = f.read()
 
@@ -295,7 +357,6 @@ class GPTImagePlugin(Star):
 
         for attempt in range(max_retries + 1):
             try:
-                # multipart每次重试要重建（FormData不能复用）
                 data = aiohttp.FormData()
                 data.add_field("image", img_bytes, filename=filename, content_type=mime)
                 data.add_field("prompt", prompt)
@@ -316,11 +377,21 @@ class GPTImagePlugin(Star):
                                 err_msg = await resp.text()
                             logger.error(f"edits API 错误 ({resp.status}) 第{attempt+1}次: {err_msg[:300]}")
 
+                            is_routing = (
+                                "only supported" in err_msg.lower() or
+                                "not supported" in err_msg.lower() or
+                                "convert_request_failed" in err_msg.lower() or
+                                "failed to parse multipart" in err_msg.lower() or
+                                resp.status == 404
+                            )
+                            if is_routing:
+                                raise Exception(f"API {resp.status}: {err_msg[:400]}")
+
                             is_transient = (
                                 500 <= resp.status < 600 or
                                 "stream disconnected" in err_msg.lower() or
                                 "timeout" in err_msg.lower()
-                            ) and "only supported on" not in err_msg.lower()
+                            )
                             if is_transient and attempt < max_retries:
                                 await asyncio.sleep(2 ** attempt)
                                 last_err = f"API {resp.status}: {err_msg[:400]}"
@@ -348,6 +419,64 @@ class GPTImagePlugin(Star):
                 raise Exception(last_err)
 
         raise Exception(last_err or "未知错误")
+
+    async def _try_chat_completions_multimodal(self, ref_image: str, prompt: str, session_id: str) -> dict | None:
+        """走 /v1/chat/completions 多模态（msuicode 类宽松站的图生图实现）"""
+        url = f"{self.api_base}/v1/chat/completions"
+
+        with open(ref_image, "rb") as f:
+            img_bytes = f.read()
+
+        import mimetypes
+        mime, _ = mimetypes.guess_type(ref_image)
+        if not mime or not mime.startswith("image/"):
+            mime = "image/png"
+
+        img_b64 = base64.b64encode(img_bytes).decode("utf-8")
+        data_url = f"data:{mime};base64,{img_b64}"
+
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": self.model,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": f"请基于这张参考图进行修改：{prompt}"},
+                        {"type": "image_url", "image_url": {"url": data_url, "detail": "high"}},
+                    ],
+                }
+            ],
+        }
+
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                url, json=payload, headers=headers,
+                timeout=aiohttp.ClientTimeout(total=self.timeout),
+            ) as resp:
+                if resp.status != 200:
+                    try:
+                        err_data = await resp.json()
+                        err_msg = err_data.get("error", {}).get("message", str(err_data))
+                    except Exception:
+                        err_msg = await resp.text()
+                    logger.error(f"chat 图生图错误 ({resp.status}): {err_msg[:300]}")
+                    raise Exception(f"API {resp.status}: {err_msg[:400]}")
+                resp_data = await resp.json()
+
+        logger.info(f"chat 图生图返回 keys: {list(resp_data.keys())}")
+        local_path = await self._extract_image_from_chat(resp_data, session_id)
+        if local_path:
+            self.last_image_url[session_id] = {
+                "url": None,
+                "local_path": local_path,
+                "prompt": prompt,
+            }
+            return {"local_path": local_path, "url": None}
+        return None
 
     # ─────────────────────────────────────
     # 从 chat/completions 响应中提取图片（多种格式兼容）
