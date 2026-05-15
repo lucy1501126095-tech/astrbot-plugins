@@ -189,21 +189,29 @@ class GPTImagePlugin(Star):
     # ─────────────────────────────────────
 
     async def _call_images_api(self, prompt: str, session_id: str) -> dict | None:
-        """POST /v1/images/generations - 带偶发错误重试"""
-        url = f"{self.api_base}/v1/images/generations"
+        """文生图：走 /chat/completions 纯文本
+        中转站的 /v1/images/generations 经常半残（502、stream disconnected、慢请求超时），
+        chat/completions 是它们最成熟的图片路径。文生图content只放text，不带image_url。
+        """
+        url = f"{self.api_base}/v1/chat/completions"
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
         payload = {
             "model": self.model,
-            "prompt": prompt,
-            "n": 1,
-            "size": "1024x1024",
+            "stream": False,
+            "quality": "medium",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": prompt,
+                }
+            ],
         }
 
         last_err = None
-        max_retries = 2  # 总共尝试3次
+        max_retries = 2
 
         for attempt in range(max_retries + 1):
             try:
@@ -218,36 +226,43 @@ class GPTImagePlugin(Star):
                                 err_msg = err_data.get("error", {}).get("message", str(err_data))
                             except Exception:
                                 err_msg = await resp.text()
-                            logger.error(f"images API 错误 ({resp.status}) 第{attempt+1}次: {err_msg[:300]}")
+                            logger.error(f"chat API 错误 ({resp.status}) 第{attempt+1}次: {err_msg[:300]}")
 
-                            # 5xx 或 stream disconnected 这种偶发错误重试
                             is_transient = (
                                 500 <= resp.status < 600 or
                                 "stream disconnected" in err_msg.lower() or
                                 "timeout" in err_msg.lower()
                             )
                             if is_transient and attempt < max_retries:
-                                await asyncio.sleep(2 ** attempt)  # 1秒、2秒
+                                await asyncio.sleep(2 ** attempt)
                                 last_err = f"API {resp.status}: {err_msg[:400]}"
                                 continue
                             raise Exception(f"API {resp.status}: {err_msg[:400]}")
 
-                        data = await resp.json()
+                        resp_data = await resp.json()
 
-                logger.info(f"images API 返回(第{attempt+1}次): {str(data)[:200]}")
-                return await self._parse_image_result(data, prompt, session_id)
+                logger.info(f"chat API 返回(第{attempt+1}次) keys: {list(resp_data.keys())}")
+                local_path = await self._extract_image_from_chat(resp_data, session_id)
+                if local_path:
+                    self.last_image_url[session_id] = {
+                        "url": None,
+                        "local_path": local_path,
+                        "prompt": prompt,
+                    }
+                    return {"local_path": local_path, "url": None}
+                return None
 
             except asyncio.TimeoutError:
                 last_err = "请求超时"
                 if attempt < max_retries:
-                    logger.warning(f"images API 第{attempt+1}次超时，重试中")
+                    logger.warning(f"chat API 第{attempt+1}次超时，重试中")
                     await asyncio.sleep(2 ** attempt)
                     continue
                 raise
             except aiohttp.ClientError as e:
                 last_err = f"网络错误: {e}"
                 if attempt < max_retries:
-                    logger.warning(f"images API 第{attempt+1}次网络错误: {e}，重试中")
+                    logger.warning(f"chat API 第{attempt+1}次网络错误: {e}，重试中")
                     await asyncio.sleep(2 ** attempt)
                     continue
                 raise Exception(last_err)
