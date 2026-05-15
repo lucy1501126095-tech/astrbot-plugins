@@ -200,8 +200,6 @@ class GPTImagePlugin(Star):
         }
         payload = {
             "model": self.model,
-            "stream": False,
-            "quality": "medium",
             "messages": [
                 {
                     "role": "user",
