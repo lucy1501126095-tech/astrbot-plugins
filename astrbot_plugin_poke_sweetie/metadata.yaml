@@ -1,0 +1,7 @@
+name: astrbot_plugin_poke_sweetie
+display_name: 戳一戳甜蜜回复
+description: "融合版戳一戳插件：戳bot走LLM甜蜜回复+反戳，护主模式，LLM可主动戳人工具。支持连续戳升级、时段感知、可选模型。"
+author: Kai
+version: 1.4.0
+repo: https://github.com/sweetie-kai/astrbot_plugin_poke_sweetie
+min_astrbot_version: 4.5.0

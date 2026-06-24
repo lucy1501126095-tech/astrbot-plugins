@@ -1,0 +1,6 @@
+name: astrbot_plugin_kai_lorebook
+desc: 极简世界书 - 关键词触发 system_prompt 注入
+help: 输入 /世界书 查看命令帮助
+version: v1.2.0
+author: sweetie
+repo: ""

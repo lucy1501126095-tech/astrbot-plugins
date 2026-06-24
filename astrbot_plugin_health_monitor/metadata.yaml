@@ -1,0 +1,4 @@
+name: health_monitor
+description: 健康数据监控插件，通过HTTP接口接收Apple Health数据
+author: Kai
+version: 1.0.0

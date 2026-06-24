@@ -1,0 +1,8 @@
+{
+  "owner_id": {
+    "type": "string",
+    "description": "允许管理世界书的QQ号",
+    "default": "",
+    "hint": "只有此QQ号的用户可以增删改查世界书条目"
+  }
+}

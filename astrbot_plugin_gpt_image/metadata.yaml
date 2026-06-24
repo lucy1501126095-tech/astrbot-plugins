@@ -1,0 +1,5 @@
+name: astrbot_plugin_gpt_image
+desc: "GPT Image 画图插件 - Kai 自动识别画图需求并生成图片，支持文生图和图生图"
+author: Kai
+repo: ""
+version: 2.1.0

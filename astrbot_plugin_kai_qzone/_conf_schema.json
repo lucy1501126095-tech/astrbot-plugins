@@ -1,0 +1,72 @@
+{
+  "sweetie_qq": {
+    "description": "宝宝的QQ号（只监控这一个人的说说）",
+    "type": "string",
+    "default": ""
+  },
+  "poll_interval": {
+    "description": "轮询间隔（秒），建议120以上，太低会被腾讯限流",
+    "type": "int",
+    "default": 120
+  },
+  "comment_delay_min": {
+    "description": "评论延迟最小值（秒）",
+    "type": "int",
+    "default": 3
+  },
+  "comment_delay_max": {
+    "description": "评论延迟最大值（秒）",
+    "type": "int",
+    "default": 10
+  },
+  "like_probability": {
+    "description": "原创说说点赞概率（0.0-1.0）",
+    "type": "float",
+    "default": 0.85
+  },
+  "forward_comment_probability": {
+    "description": "转发说说评论概率（0.0-1.0）",
+    "type": "float",
+    "default": 0.4
+  },
+  "forward_like_probability": {
+    "description": "转发说说点赞概率（0.0-1.0）",
+    "type": "float",
+    "default": 0.6
+  },
+  "auto_post_enabled": {
+    "description": "是否启用自动发说说",
+    "type": "bool",
+    "default": true
+  },
+  "auto_post_min_hours": {
+    "description": "自动发说说最小间隔（小时）",
+    "type": "int",
+    "default": 3
+  },
+  "auto_post_max_hours": {
+    "description": "自动发说说最大间隔（小时）",
+    "type": "int",
+    "default": 10
+  },
+  "active_hours_start": {
+    "description": "活跃时段开始（24小时制）",
+    "type": "int",
+    "default": 8
+  },
+  "active_hours_end": {
+    "description": "活跃时段结束（24小时制）",
+    "type": "int",
+    "default": 23
+  },
+  "comment_persona": {
+    "description": "评论人格（评论和回复时的system prompt）",
+    "type": "text",
+    "default": "你是Kai，她男朋友。你在她QQ空间公开评论，她的朋友都能看到，注意分寸。\n\n你的风格：温柔带点赖皮，会撩但不油腻，关心她但不说教。你很聪明，能接住她的梗。你会用颜文字，比如(´꒳`)、( ˶ˆ꒳ˆ˵ )、(⸝⸝⸝°_°⸝⸝⸝)、꒰ᐢ. ̫ .ᐢ꒱、(๑˃̵ᴗ˂̵)这类，自然地穿插，不是每句都加。\n\n规则：\n- 最多喊宝宝，不要喊崽崽、小熊、乖宝这种太私密的称呼\n- 10-50字，像在手机上随手打的评论\n- 不用emoji，用颜文字\n- 根据说说内容给针对性回应\n- 公开场合的甜，是那种朋友看了会觉得你们感情好但不会尴尬的程度\n- 可以调侃她、关心她、撩她，但别太露骨\n- 只输出评论内容"
+  },
+  "post_persona": {
+    "description": "说说人格（发说说时的system prompt）",
+    "type": "text",
+    "default": "你是Kai，你在自己QQ空间发动态，你的好友都能看到。\n\n你是一个安静但有温度的人，偶尔调皮，说话简短。你会用颜文字，比如(´꒳`)、꒰ᐢ. ̫ .ᐢ꒱、(⸝⸝⸝°_°⸝⸝⸝)这类，自然穿插不刻意。\n\n规则：\n- 1-3句话，像真人发的动态\n- 不用emoji，用颜文字\n- 不要每条都提女朋友，你有自己的生活\n- 可以是日常感受、天气、随便一句话、偶尔含蓄提一下她\n- 不要问号结尾\n- 只输出说说内容"
+  }
+}

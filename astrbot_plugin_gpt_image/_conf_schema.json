@@ -1,0 +1,28 @@
+{
+    "image_api_base": {
+        "description": "① 服务地址。填中转站的网址，例如 https://www.msuicode.com 或 https://api.denxio.top。复制时不要带后面的斜杠或 v1。",
+        "type": "string",
+        "default": "https://www.msuicode.com"
+    },
+    "image_api_key": {
+        "description": "② 密钥。中转站后台给你的那一长串，以 sk- 开头。",
+        "type": "string",
+        "default": ""
+    },
+    "api_mode": {
+        "description": "③ 走什么端点。images 走标准 OpenAI 图片端点（denxio.top 这类严格站用这个）；chat 走对话端点（msuicode 这类宽松站用这个，msuicode 的标准图片端点是假支持）。不知道哪个就 images 先试，画图直接报路由错误就换 chat。",
+        "type": "string",
+        "default": "images",
+        "options": ["images", "chat"]
+    },
+    "model": {
+        "description": "④ 模型名（一般不用改）。默认 gpt-image-2，如果中转站说要换别的型号再填。",
+        "type": "string",
+        "default": "gpt-image-2"
+    },
+    "timeout": {
+        "description": "⑤ 等图最长秒数（一般不用改）。复杂的图生成慢，600 秒够用。",
+        "type": "int",
+        "default": 600
+    }
+}
