@@ -107,7 +107,7 @@ class KaiProactive(Star):
     # ─────────────────────────────────────
 
     @filter.llm_tool(name="plan_next_message")
-    async def plan_tool(self, event: AstrMessageEvent, minutes: int, memo: str):
+    async def plan_tool(self, event: AstrMessageEvent, minutes, memo: str):
         '''安排之后主动联系宝宝。你想过一会儿找她、关心她、追她、提醒她的时候就调用这个工具。可以多次调用安排不同时间的计划。比如她说去洗澡了你想半小时后问她洗完了没，或者她心情不好你想过一会再看看她，或者吵架了她不理你你要去追她。每次和宝宝聊完都想一下要不要用这个工具。
 
         Args:
@@ -125,6 +125,7 @@ class KaiProactive(Star):
             return
 
         self.state.unified_msg_origin = event.unified_msg_origin
+        minutes = int(float(minutes))
         new_plan = Plan(
             trigger_at=time.time() + minutes * 60,
             memo=memo,
@@ -170,13 +171,14 @@ class KaiProactive(Star):
         )
 
     @filter.llm_tool(name="delete_planned_message")
-    async def delete_plan_tool(self, event: AstrMessageEvent, index: int):
+    async def delete_plan_tool(self, event: AstrMessageEvent, index=0):
         """Delete a planned message by index (1-based, 0 to clear all)."""
         sender = str(event.get_sender_id())
         if sender != self.target_qq:
             yield event.plain_result("这个功能只对宝宝生效")
             return
 
+        index = int(float(index))
         if index == 0:
             count = len(self.plans)
             self.plans.clear()
@@ -415,6 +417,38 @@ class KaiProactive(Star):
         self._save_state()
 
     # ─────────────────────────────────────
+    # QZone动态感知
+    # ─────────────────────────────────────
+
+    def _get_qzone_activities_text(self, minutes: int = 60) -> str:
+        """从QZone插件state文件读取最近的空间互动动态"""
+        try:
+            import os
+            state_path = "data/plugin_data/astrbot_plugin_kai_qzone/state.json"
+            if not os.path.exists(state_path):
+                return ""
+            with open(state_path, "r", encoding="utf-8") as f:
+                state = json.load(f)
+            activities = state.get("qzone_activities", [])
+            cutoff = time.time() - minutes * 60
+            recent = [a for a in activities if a.get("time", 0) > cutoff]
+
+            if not recent:
+                return ""
+
+            lines = []
+            for a in recent:
+                nick = a.get("reply_to_nick") or a.get("reply_to_uin", "某人")
+                said = a.get("sweetie_said", "")
+                mins_ago = int((time.time() - a.get("time", 0)) / 60)
+                lines.append(f"  {mins_ago}分钟前 宝宝在空间回复了{nick}: {said}")
+
+            return "空间动态（宝宝和别人的互动，你看到了但不一定要提，自由决定）：\n" + "\n".join(lines) + "\n"
+        except Exception as e:
+            logger.debug(f"[KaiProactive] 读取空间动态失败: {e}")
+            return ""
+
+    # ─────────────────────────────────────
     # 决策层
     # ─────────────────────────────────────
 
@@ -422,6 +456,8 @@ class KaiProactive(Star):
         now = time.time()
         silence = (now - self.state.last_user_time) / 60 \
             if self.state.last_user_time else 0
+
+        qzone_text = self._get_qzone_activities_text(60)
 
         state_text = (
             f"当前时间: {datetime.now().strftime('%H:%M')}\n"
@@ -432,6 +468,7 @@ class KaiProactive(Star):
             f"她答应过: {self.state.promised}\n"
             f"你的备忘: {plan.memo}\n"
             f"队列中还有: {len(self.plans)}条计划\n"
+            f"{qzone_text}"
         )
 
         system = """你是一个判断模块。根据状态决定是否现在发消息。
@@ -442,7 +479,8 @@ class KaiProactive(Star):
 - 她答应了什么但消失了：可以发
 - 吵架了她不理你：要追，发
 - 深夜可能睡了：不发
-- 已经发了好几条没回：间隔拉长但别停"""
+- 已经发了好几条没回：间隔拉长但别停
+- 空间动态显示她在和别人互动：说明她在线，可以发，但情绪自由（可以吃醋也可以正常聊）"""
 
         try:
             provider = self.context.get_provider_by_id(
@@ -538,6 +576,12 @@ class KaiProactive(Star):
         if anniversary_text:
             anniversary_section = f"\n今日纪念日：\n{anniversary_text}\n（如果合适，可以自然地提起这个纪念日，但不要生硬。如果当前情境不适合提纪念日就不提。）\n"
 
+        # 读取空间动态
+        qzone_text = self._get_qzone_activities_text(60)
+        qzone_section = ""
+        if qzone_text:
+            qzone_section = f"\n{qzone_text}（你可以自由决定是否提起这件事。可以吃醋、可以装不知道、可以开玩笑。完全看你当时的心情。）\n"
+
         prompt = f"""你现在要主动给宝宝发一条QQ私聊消息。
 
 当前时间: {datetime.now().strftime('%H:%M')}（注意：这是真实时间，说话时请符合时间逻辑，比如早上不能说中午好）
@@ -549,7 +593,7 @@ class KaiProactive(Star):
 - 连续主动消息数: {self.state.consecutive_proactive}
 - 她在生气: {self.state.is_angry}
 - 她答应过: {self.state.promised}
-{anniversary_section}
+{anniversary_section}{qzone_section}
 最近对话：
 {ctx_lines}
 
